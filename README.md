@@ -1,17 +1,13 @@
-# DeepHit
-Title: "DeepHit: A Deep Learning Approach to Survival Analysis with Competing Risks"
+# DeepHit (Unofficial PyTorch Implementation)
 
-Authors: Changhee Lee, William R. Zame, Jinsung Yoon, Mihaela van der Schaar
+DeepHit is a neural network-based model for survival analysis that can handle competing risks. This repository contains an **unofficial refactor** of the original DeepHit model, implemented in PyTorch.
 
-- Reference: C. Lee, W. R. Zame, J. Yoon, M. van der Schaar, "DeepHit: A Deep Learning Approach to Survival Analysis with Competing Risks," AAAI Conference on Artificial Intelligence (AAAI), 2018
-- Paper: http://medianetlab.ee.ucla.edu/papers/AAAI_2018_DeepHit
-- Supplementary: http://medianetlab.ee.ucla.edu/papers/AAAI_2018_DeepHit_Appendix
+## Introduction
 
-### Description of the code
-This code shows the modified implementation of DeepHit on Metabric (single risk) and Synthetic (competing risks) datasets.
+This repository provides an implementation of the DeepHit model using PyTorch. It supports survival analysis with competing risks, and is based on the official implementation available [here](https://github.com/chl8856/DeepHit).
 
-The detailed modifications are as follows:
-- Hyper-parameter opimization using random search is implemented
-- Residual connections are removed
-- The definition of the time-dependent C-index is changed; please refer to T.A. Gerds et al, "Estimating a Time-Dependent Concordance Index for Survival Prediction Models with Covariate Dependent Censoring," Stat Med., 2013
-- Set "EVAL_TIMES" to a list of evaluation times of interest for optimizating the network with respect these evaluation times.
+## Disclaimer
+
+This is an **unofficial** implementation of DeepHit in PyTorch. If you are looking for the official version, it is available [here](https://github.com/chl8856/DeepHit).
+
+The purpose of this repository is to bring DeepHit to the PyTorch ecosystem for research and experimentation. While efforts have been made to keep this implementation faithful to the original, there might be slight differences due to the refactor.
