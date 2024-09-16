@@ -1,18 +1,6 @@
-'''
-First implemented: 01/25/2018
-  > For survival analysis on longitudinal dataset
-By CHANGHEE LEE
-
-Modifcation List:
-	- 08/07/2018: weight regularization for FC_NET is added
-'''
-
-import tensorflow as tf
-import numpy as np
-from tensorflow.keras.layers import Dense, Dropout
-from tensorflow.keras.initializers import GlorotUniform  # Xavier initializer in TF2
-from tensorflow.keras.regularizers import l2  # Example regularizer
-from tensorflow.keras.layers import GRUCell, LSTMCell, RNN, Dropout
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 ### CONSTRUCT MULTICELL FOR MULTI-LAYER RNNS
 def create_rnn_cell(num_units, num_layers, keep_prob, RNN_type):
@@ -27,93 +15,90 @@ def create_rnn_cell(num_units, num_layers, keep_prob, RNN_type):
 
     for _ in range(num_layers):
         if RNN_type == 'GRU':
-            cell = GRUCell(num_units)
+            cell = nn.GRUCell(num_units, num_units)
         elif RNN_type == 'LSTM':
-            cell = LSTMCell(num_units)
-
-        # Apply dropout to each cell, if keep_prob < 1.0
-        if keep_prob < 1.0:
-            cell = Dropout(1 - keep_prob)(cell)
+            cell = nn.LSTMCell(num_units, num_units)
 
         cells.append(cell)
 
-    # Stack the RNN cells into a multi-layer RNN using RNN wrapper
-    multi_rnn = RNN(cells, return_sequences=True, return_state=True)
-    
-    return multi_rnn
+    # PyTorch RNN/GRU/LSTM use dropout in their built-in modules, no need to explicitly add it to cells
+    multi_rnn = nn.RNNBase(input_size=num_units, hidden_size=num_units, num_layers=num_layers, dropout=1-keep_prob, batch_first=True)
 
+    return multi_rnn
 
 ### EXTRACT STATE OUTPUT OF MULTICELL-RNNS
 def create_concat_state(state, num_layers, RNN_type):
     '''
-        GOAL	     : concatenate the tuple-type tensor (state) into a single tensor
-        state        : input state is a tuple ofo MulticellRNN (i.e. output of MulticellRNN)
-                       consist of only hidden states h for GRU and hidden states c and h for LSTM
-        num_layers   : number of layers in MulticellRNN
-        RNN_type     : either 'LSTM' or 'GRU'
+        GOAL	     : Concatenate the tuple-type tensor (state) into a single tensor
+        state        : Input state is a tuple of MulticellRNN (i.e. output of MulticellRNN)
+                       Consists of only hidden states h for GRU and hidden states c and h for LSTM
+        num_layers   : Number of layers in MulticellRNN
+        RNN_type     : Either 'LSTM' or 'GRU'
     '''
     for i in range(num_layers):
         if RNN_type == 'LSTM':
-            tmp = state[i][1] ## i-th layer, h state for LSTM
+            tmp = state[i][1]  # i-th layer, h state for LSTM
         elif RNN_type == 'GRU':
-            tmp = state[i] ## i-th layer, h state for GRU
+            tmp = state[i]  # i-th layer, h state for GRU
         else:
-            print('ERROR: WRONG RNN CELL TYPE')
+            raise ValueError('ERROR: WRONG RNN CELL TYPE')
 
         if i == 0:
             rnn_state_out = tmp
         else:
-            rnn_state_out = tf.concat([rnn_state_out, tmp], axis = 1)
+            rnn_state_out = torch.cat([rnn_state_out, tmp], dim=1)
     
     return rnn_state_out
 
-
 ### FEEDFORWARD NETWORK
-
 def create_FCNet(inputs, num_layers, h_dim, h_fn, o_dim, o_fn, w_init=None, keep_prob=1.0, w_reg=None):
     '''
-        GOAL             : Create FC network with different specifications 
-        inputs (tensor)  : input tensor
-        num_layers       : number of layers in FCNet
-        h_dim  (int)     : number of hidden units
-        h_fn             : activation function for hidden layers (default: tf.nn.relu)
-        o_dim  (int)     : number of output units
-        o_fn             : activation function for output layers (default: None)
-        w_init           : initialization for weight matrix (default: Xavier (GlorotUniform))
-        keep_prob        : keep probability [0, 1]  (if 1.0, dropout is not employed)
+        GOAL             : Create a fully connected network with different specifications 
+        inputs (tensor)  : Input tensor
+        num_layers       : Number of layers in FCNet
+        h_dim  (int)     : Number of hidden units
+        h_fn             : Activation function for hidden layers (default: nn.ReLU)
+        o_dim  (int)     : Number of output units
+        o_fn             : Activation function for output layers (default: None)
+        w_init           : Initialization for weight matrix (default: Xavier (GlorotUniform))
+        keep_prob        : Keep probability [0, 1] (if 1.0, dropout is not employed)
     '''
 
-    # Set default activation functions (hidden: relu, out: None)
+    # Default activation function (hidden: ReLU, output: None)
     if h_fn is None:
-        h_fn = 'relu'
+        h_fn = nn.ReLU()
     if o_fn is None:
         o_fn = None
 
-    # Set default weight initialization (GlorotUniform in TF2.x)
+    # Use GlorotUniform (Xavier initialization) by default if w_init is not specified
     if w_init is None:
-        w_init = GlorotUniform()
+        w_init = nn.init.xavier_uniform_
 
-    # Construct the fully connected network
+    layers = []
+
+    # Build the fully connected network
     for layer in range(num_layers):
-        if num_layers == 1:
-            # Single layer network
-            out = Dense(o_dim, activation=o_fn, kernel_initializer=w_init, kernel_regularizer=w_reg)(inputs)
-        
+        if layer == 0:
+            # First hidden layer
+            layers.append(nn.Linear(inputs.size(1), h_dim))
+            layers.append(h_fn)
+            if keep_prob < 1.0:
+                layers.append(nn.Dropout(1 - keep_prob))
+        elif layer < num_layers - 1:
+            # Intermediate hidden layers
+            layers.append(nn.Linear(h_dim, h_dim))
+            layers.append(h_fn)
+            if keep_prob < 1.0:
+                layers.append(nn.Dropout(1 - keep_prob))
         else:
-            if layer == 0:
-                # First layer
-                h = Dense(h_dim, activation=h_fn, kernel_initializer=w_init, kernel_regularizer=w_reg)(inputs)
-                if keep_prob < 1.0:  # Only apply dropout if keep_prob is less than 1
-                    h = Dropout(1 - keep_prob)(h)
+            # Output layer
+            layers.append(nn.Linear(h_dim, o_dim))
+            if o_fn:
+                layers.append(o_fn)
 
-            elif layer > 0 and layer != (num_layers - 1):
-                # Intermediate layers
-                h = Dense(h_dim, activation=h_fn, kernel_initializer=w_init, kernel_regularizer=w_reg)(h)
-                if keep_prob < 1.0:
-                    h = Dropout(1 - keep_prob)(h)
+    # Stack the layers
+    fc_net = nn.Sequential(*layers)
+    # Apply Xavier initialization
+    fc_net.apply(lambda m: w_init(m.weight) if isinstance(m, nn.Linear) else None)
 
-            else:
-                # Last layer
-                out = Dense(o_dim, activation=o_fn, kernel_initializer=w_init, kernel_regularizer=w_reg)(h)
-
-    return out
+    return fc_net

@@ -1,53 +1,28 @@
-'''
-This declare DeepHit architecture:
-
-INPUTS:
-    - input_dims: dictionary of dimension information
-        > x_dim: dimension of features
-        > num_Event: number of competing events (this does not include censoring label)
-        > num_Category: dimension of time horizon of interest, i.e., |T| where T = {0, 1, ..., T_max-1}
-                      : this is equivalent to the output dimension
-    - network_settings:
-        > h_dim_shared & num_layers_shared: number of nodes and number of fully-connected layers for the shared subnetwork
-        > h_dim_CS & num_layers_CS: number of nodes and number of fully-connected layers for the cause-specific subnetworks
-        > active_fn: 'relu', 'elu', 'tanh'
-        > initial_W: Xavier initialization is used as a baseline
-
-LOSS FUNCTIONS:
-    - 1. loglikelihood (this includes log-likelihood of subjects who are censored)
-    - 2. rankding loss (this is calculated only for acceptable pairs; see the paper for the definition)
-    - 3. calibration loss (this is to reduce the calibration loss; this is not included in the paper version)
-'''
-
-import numpy as np
-import tensorflow as tf
-import random
-
-#from tensorflow.keras.layers import Dense as FC_Net
-from tensorflow.keras.layers import Dense
-from tensorflow.keras import regularizers
-from tensorflow.keras.regularizers import l2, l1
-from tensorflow.keras.optimizers import legacy as optimizers
-#Faster for M1/M2 macs -N
-### user-defined functions
-import utils_network as utils
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
 
 _EPSILON = 1e-08
 
-
-
-##### USER-DEFINED FUNCTIONS
+# USER-DEFINED FUNCTIONS
 def log(x):
-    return tf.log(x + _EPSILON)
+    return torch.log(x + _EPSILON)
 
 def div(x, y):
-    return tf.div(x, (y + _EPSILON))
+    return x / (y + _EPSILON)
 
-import tensorflow as tf
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-class Model_DeepHit(tf.keras.Model):
-    def __init__(self, name, input_dims, network_settings):
-        super(Model_DeepHit, self).__init__(name=name)
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class Model_DeepHit(nn.Module):
+    def __init__(self, input_dims, network_settings):
+        super(Model_DeepHit, self).__init__()
 
         # INPUT DIMENSIONS
         self.x_dim = input_dims['x_dim']
@@ -59,105 +34,105 @@ class Model_DeepHit(tf.keras.Model):
         self.h_dim_CS = network_settings['h_dim_CS']
         self.num_layers_shared = network_settings['num_layers_shared']
         self.num_layers_CS = network_settings['num_layers_CS']
-
         self.active_fn = network_settings['active_fn']
-        self.initial_W = network_settings['initial_W']
-
-        self.reg_W = tf.keras.regularizers.l2(1e-4)
-        self.reg_W_out = tf.keras.regularizers.l1(1e-4)
-
-        # Build the network layers
+        
+        # Build shared and cause-specific subnetworks
         self.shared_layers = self.build_shared_layers()
         self.cause_specific_layers = self.build_cause_specific_layers()
         self.output_layer = self.build_output_layer()
 
     def build_shared_layers(self):
         layers = []
-        for _ in range(self.num_layers_shared):
-            layers.append(
-                tf.keras.layers.Dense(self.h_dim_shared, activation=self.active_fn, kernel_initializer=self.initial_W,
-                                      kernel_regularizer=self.reg_W)
-            )
-        return layers
+        for i in range(self.num_layers_shared):
+            input_dim = self.x_dim if i == 0 else self.h_dim_shared
+            layers.append(nn.Linear(input_dim, self.h_dim_shared))
+        return nn.ModuleList(layers)
 
     def build_cause_specific_layers(self):
         layers = []
         for _ in range(self.num_Event):
             event_layers = []
-            for _ in range(self.num_layers_CS):
-                event_layers.append(
-                    tf.keras.layers.Dense(self.h_dim_CS, activation=self.active_fn, kernel_initializer=self.initial_W,
-                                          kernel_regularizer=self.reg_W)
-                )
-            layers.append(event_layers)
-        return layers
+            # The first event layer should take the shared layer output as input (self.h_dim_shared)
+            for i in range(self.num_layers_CS):
+                input_dim = self.h_dim_shared if i == 0 else self.h_dim_CS  # Only the first layer uses h_dim_shared
+                event_layers.append(nn.Linear(input_dim, self.h_dim_CS))
+            layers.append(nn.ModuleList(event_layers))
+        return nn.ModuleList(layers)
 
     def build_output_layer(self):
-        return tf.keras.layers.Dense(self.num_Event * self.num_Category, activation='softmax',
-                                     kernel_initializer=self.initial_W, kernel_regularizer=self.reg_W_out)
+        return nn.Linear(self.num_Event * self.h_dim_CS, self.num_Event * self.num_Category)
 
-    def call(self, inputs, training=False):
+    def forward(self, x):
         # Forward pass through shared layers
-        x = inputs
+        #print("Input shape:", x.shape)
         for layer in self.shared_layers:
-            x = layer(x)
-
+            x = self.active_fn(layer(x))
+            #print("After shared layer:", x.shape)
+        #print("Using activation function:", self.active_fn)
         # Forward pass through cause-specific layers
         outputs = []
         for event_layers in self.cause_specific_layers:
-            h = x
+            h = x  # Output from shared layers
             for layer in event_layers:
-                h = layer(h)
+                h = self.active_fn(layer(h))
+                #print("After event layer:", h.shape)
             outputs.append(h)
-
         # Stack outputs for each event and reshape
-        out = tf.stack(outputs, axis=1)
-        out = tf.reshape(out, [-1, self.num_Event * self.h_dim_CS])
+        out = torch.stack(outputs, dim=1)  # This gives you a tensor of shape [64, num_Event, h_dim_CS]
+        #print('DEBUG1 out', out.shape)
+        out = out.view(out.size(0), -1)    # Flatten for the output layer: [64, num_Event * h_dim_CS]
+        #print('DEBUG2 out', out.shape)
 
-        # Dropout layer (the Dropout layer will handle keep_prob based on whether it's training or not)
-        out = tf.keras.layers.Dropout(0.4)(out, training=training)  # Example keep_prob = 0.6, so Dropout rate = 1 - keep_prob
+        # Apply dropout and output layer
+        out = F.dropout(out, p=0.4, training=self.training)  # Dropout rate 0.4 (keep_prob = 0.6)
+        out = self.output_layer(out)  # Output layer expects [64, num_Event * num_Category]
+        #print('DEBUG3 out', out.shape)
 
-        # Final output layer
-        out = self.output_layer(out)
-        out = tf.reshape(out, [-1, self.num_Event, self.num_Category])
+        out = out.view(-1, self.num_Event, self.num_Category)
+        #print('DEBUG4 out', out.shape)
 
-        return out
+        return F.softmax(out, dim=-1)
 
     def compute_loss(self, DATA, MASK, PARAMETERS, predictions):
-        (x_mb, k_mb, t_mb) = DATA
-        (m1_mb, m2_mb) = MASK
-        (alpha, beta, gamma) = PARAMETERS
+        x_mb, k_mb, t_mb = DATA
+        m1_mb, m2_mb = MASK
+        alpha, beta, gamma = PARAMETERS
 
-        I_1 = tf.sign(k_mb)
+        I_1 = torch.sign(k_mb)
 
         # Compute log-likelihood loss (Loss 1)
-        tmp1 = tf.reduce_sum(tf.reduce_sum(m1_mb * predictions, axis=2), axis=1, keepdims=True)
-        tmp1 = I_1 * tf.math.log(tmp1)
+        tmp1 = torch.sum(torch.sum(m1_mb * predictions, dim=2), dim=1, keepdim=True)
+        tmp1 = I_1 * torch.log(tmp1)
 
-        tmp2 = tf.reduce_sum(tf.reduce_sum(m1_mb * predictions, axis=2), axis=1, keepdims=True)
-        tmp2 = (1.0 - I_1) * tf.math.log(tmp2)
+        tmp2 = torch.sum(torch.sum(m1_mb * predictions, dim=2), dim=1, keepdim=True)
+        tmp2 = (1.0 - I_1) * torch.log(tmp2)
 
-        LOSS_1 = -tf.reduce_mean(tmp1 + 1.0 * tmp2)
+        LOSS_1 = -torch.mean(tmp1 + 1.0 * tmp2)
 
         # Return the computed loss (you can include ranking and calibration loss as needed)
         return alpha * LOSS_1  # Add the other losses like ranking and calibration here
-    
-    def train_step(self, DATA, MASK, PARAMETERS, keep_prob, lr_train):
-        with tf.GradientTape() as tape:
-            # Forward pass through the model
-            predictions = self(DATA[0], training=True)
-            
-            # Compute loss based on model predictions
-            loss = self.compute_loss(DATA, MASK, PARAMETERS, predictions)
 
-        # Compute and apply gradients
-        gradients = tape.gradient(loss, self.trainable_variables)
-        
-        #optimizer = tf.keras.optimizers.Adam(learning_rate=lr_train)
-        optimizer = optimizers.Adam(learning_rate=lr_train)
-        optimizer.apply_gradients(zip(gradients, self.trainable_variables))
+    def training_step(self, DATA, MASK, PARAMETERS, optimizer):
+        x_mb, k_mb, t_mb = DATA
+        m1_mb, m2_mb = MASK
+        alpha, beta, gamma = PARAMETERS
 
-        return loss
+        # Zero gradients
+        optimizer.zero_grad()
 
-    def predict(self, x_test, keep_prob=1.0):
-        return self.call(x_test, training=False)
+        # Forward pass
+        predictions = self(x_mb)
+
+        # Compute loss
+        loss = self.compute_loss(DATA, MASK, PARAMETERS, predictions)
+
+        # Backward pass and optimization
+        loss.backward()
+        optimizer.step()
+
+        return loss.item()
+
+    def predict(self, x_test):
+        self.eval()  # Set the model to evaluation mode (disables dropout, etc.)
+        with torch.no_grad():  # Disable gradient computation during inference
+            return self.forward(x_test)

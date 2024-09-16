@@ -1,59 +1,35 @@
-'''
-This train DeepHit, and outputs the validation performance for random search.
+import numpy as np
+import torch
+import torch.optim as optim
+import torch.nn.functional as F
+from sklearn.model_selection import train_test_split
+import os
+from termcolor import colored
+from sklearn.metrics import brier_score_loss
 
-INPUTS:
-    - DATA = (data, time, label)
-    - MASK = (mask1, mask2)
-    - in_parser: dictionary of hyperparameters
-    - out_itr: the training/testing split indicator
-    - eval_time: None or a list (e.g. [12, 24, 36]) at which the validation of the network is performed
-    - MAX_VALUE: maximum validation value
-    - OUT_ITERATION: total number of training/testing splits
-    - seed: random seed for training/testing/validation
-
-OUTPUTS:
-    - the validation performance of the trained network
-    - save the trained network in the folder directed by "in_parser['out_path'] + '/itr_' + str(out_itr)"
-'''
+# Import user-defined utilities
+import utils_network as utils
+from class_DeepHit import Model_DeepHit
+from utils_eval import weighted_c_index, weighted_brier_score
 
 _EPSILON = 1e-08
 
-
-import numpy as np
-import pandas as pd
-import tensorflow as tf
-import random
-import os
-# import sys
-from tensorflow.keras.initializers import GlorotUniform
-from termcolor import colored
-from sklearn.metrics import brier_score_loss
-from sklearn.model_selection import train_test_split
-
-import utils_network as utils
-
-from class_DeepHit import Model_DeepHit
-from utils_eval import c_index, brier_score, weighted_c_index, weighted_brier_score
-
-
-
-##### USER-DEFINED FUNCTIONS
+##### USER-DEFINED FUNCTIONS #####
 def log(x):
-    return tf.log(x + 1e-8)
+    return torch.log(x + _EPSILON)
 
 def div(x, y):
-    return tf.div(x, (y + 1e-8))
+    return x / (y + _EPSILON)
 
 def f_get_minibatch(mb_size, x, label, time, mask1, mask2):
-    idx = range(np.shape(x)[0])
-    idx = random.sample(idx, mb_size)
-
+    idx = np.random.choice(np.arange(np.shape(x)[0]), mb_size, replace=False)
+    
     x_mb = x[idx, :].astype(np.float32)
-    k_mb = label[idx, :].astype(np.float32) # censoring(0)/event(1,2,..) label
+    k_mb = label[idx, :].astype(np.float32)  # censoring(0)/event(1,2,..) label
     t_mb = time[idx, :].astype(np.float32)
-    m1_mb = mask1[idx, :, :].astype(np.float32) #fc_mask
-    m2_mb = mask2[idx, :].astype(np.float32) #fc_mask
-    return x_mb, k_mb, t_mb, m1_mb, m2_mb
+    m1_mb = mask1[idx, :, :].astype(np.float32)  # fc_mask
+    m2_mb = mask2[idx, :].astype(np.float32)  # fc_mask
+    return torch.tensor(x_mb), torch.tensor(k_mb), torch.tensor(t_mb), torch.tensor(m1_mb), torch.tensor(m2_mb)
 
 
 def get_valid_performance(DATA, MASK, in_parser, out_itr, eval_time=None, MAX_VALUE=-99, OUT_ITERATION=5, seed=1234):
@@ -64,7 +40,7 @@ def get_valid_performance(DATA, MASK, in_parser, out_itr, eval_time=None, MAX_VA
     x_dim = np.shape(data)[1]
     _, num_Event, num_Category = np.shape(mask1)  # dim of mask1: [subj, Num_Event, Num_Category]
 
-    ACTIVATION_FN = {'relu': tf.nn.relu, 'elu': tf.nn.elu, 'tanh': tf.nn.tanh}
+    ACTIVATION_FN = {'relu': F.relu, 'elu': F.elu, 'tanh': torch.tanh}
 
     ##### HYPER-PARAMETERS
     mb_size = in_parser['mb_size']
@@ -78,7 +54,7 @@ def get_valid_performance(DATA, MASK, in_parser, out_itr, eval_time=None, MAX_VA
     parameter_name = 'a' + str('%02.0f' % (10 * alpha)) + 'b' + str('%02.0f' % (10 * beta)) + 'c' + str('%02.0f' % (10 * gamma))
 
     # Xavier initializer is GlorotUniform in TensorFlow 2.x
-    initial_W = tf.keras.initializers.GlorotUniform()
+    initial_W = torch.nn.init.xavier_uniform_
 
     ##### MAKE DICTIONARIES
     # INPUT DIMENSIONS
@@ -88,7 +64,7 @@ def get_valid_performance(DATA, MASK, in_parser, out_itr, eval_time=None, MAX_VA
         'num_Category': num_Category
     }
 
-    # NETWORK HYPER-PARMETERS
+    # NETWORK HYPER-PARAMETERS
     network_settings = {
         'h_dim_shared': in_parser['h_dim_shared'],
         'num_layers_shared': in_parser['num_layers_shared'],
@@ -106,9 +82,8 @@ def get_valid_performance(DATA, MASK, in_parser, out_itr, eval_time=None, MAX_VA
     print(file_path_final + ' (a:' + str(alpha) + ' b:' + str(beta) + ' c:' + str(gamma) + ')')
 
     ##### CREATE DEEPHIT NETWORK
-    model = Model_DeepHit("DeepHit", input_dims, network_settings)
-    #optimizer = tf.keras.optimizers.Adam(learning_rate=lr_train)  # Define your optimizer
-
+    model = Model_DeepHit(input_dims, network_settings)
+    optimizer = optim.Adam(model.parameters(), lr=lr_train)
     ### TRAINING-TESTING SPLIT
     (tr_data, te_data, tr_time, te_time, tr_label, te_label, 
     tr_mask1, te_mask1, tr_mask2, te_mask2) = train_test_split(
@@ -117,6 +92,9 @@ def get_valid_performance(DATA, MASK, in_parser, out_itr, eval_time=None, MAX_VA
     (tr_data, va_data, tr_time, va_time, tr_label, va_label, 
     tr_mask1, va_mask1, tr_mask2, va_mask2) = train_test_split(
         tr_data, tr_time, tr_label, tr_mask1, tr_mask2, test_size=0.20, random_state=seed)
+
+    # Convert va_data to a tensor
+    va_data = torch.tensor(va_data, dtype=torch.float32)  # ensure the data is a PyTorch tensor
 
     max_valid = -99
     stop_flag = 0
@@ -140,17 +118,18 @@ def get_valid_performance(DATA, MASK, in_parser, out_itr, eval_time=None, MAX_VA
         PARAMETERS = (alpha, beta, gamma)
 
         # Train the model on the current batch
-        loss_curr = model.train_step(DATA, MASK, PARAMETERS, keep_prob, lr_train)
+        loss_curr = model.training_step(DATA, MASK, PARAMETERS, optimizer)
         avg_loss += loss_curr / 1000
 
         if (itr + 1) % 1000 == 0:
             print('|| ITR: ' + str('%04d' % (itr + 1)) + ' | Loss: ' + colored(str('%.4f' % (avg_loss)), 'yellow', attrs=['bold']))
             avg_loss = 0
+            ### VALIDATION (based on average C-index of our interest) ###
+            model.eval()  # Set the model to evaluation mode
+            with torch.no_grad():
+                pred = model(va_data)
 
-            ### VALIDATION (based on average C-index of our interest)
-            pred = model.predict(va_data)
-
-            ### EVALUATION
+            ### EVALUATION ###
             va_result1 = np.zeros([num_Event, len(eval_time)])
 
             for t, t_time in enumerate(eval_time):
@@ -160,10 +139,10 @@ def get_valid_performance(DATA, MASK, in_parser, out_itr, eval_time=None, MAX_VA
                     print('ERROR: evaluation horizon is out of range')
                     va_result1[:, t] = -1
                 else:
-                    risk = np.sum(pred[:, :, :(eval_horizon + 1)], axis=2)  # risk score until eval_time
+                    risk = torch.sum(pred[:, :, :(eval_horizon + 1)], dim=2).numpy()  # risk score until eval_time
                     for k in range(num_Event):
                         va_result1[k, t] = weighted_c_index(
-                            tr_time, (tr_label[:, 0] == k + 1).astype(int), 
+                            tr_time, (tr_label[:, 0] == k + 1).astype(int),
                             risk[:, k], va_time, (va_label[:, 0] == k + 1).astype(int), eval_horizon)
 
             tmp_valid = np.mean(va_result1)
@@ -171,10 +150,10 @@ def get_valid_performance(DATA, MASK, in_parser, out_itr, eval_time=None, MAX_VA
             if tmp_valid > max_valid:
                 stop_flag = 0
                 max_valid = tmp_valid
-                print('Updated... Average C-index = ' + str('%.4f' % tmp_valid))
+                print(f'Updated... Average C-index = {tmp_valid:.4f}')
 
                 # Save model weights when validation improves
-                model.save_weights(file_path_final + '/models/model_itr_' + str(out_itr))
+                torch.save(model.state_dict(), os.path.join(file_path_final, 'models', f'model_itr_{out_itr}.pth'))
             else:
                 stop_flag += 1
 

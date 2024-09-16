@@ -1,129 +1,139 @@
-'''
-This provide the dimension/data/mask to train/test the network.
-
-Once must construct a function similar to "import_dataset_SYNTHETIC":
-    - DATA FORMAT:
-        > data: covariates with x_dim dimension.
-        > label: 0: censoring, 1 ~ K: K competing(single) risk(s)
-        > time: time-to-event or time-to-censoring
-    - Based on the data, creat mask1 and mask2 that are required to calculate loss functions.
-'''
 import numpy as np
 import pandas as pd
-import random
+import torch
 
-
-##### DEFINE USER-FUNCTIONS #####
+##### USER-DEFINED FUNCTIONS #####
 def f_get_Normalization(X, norm_mode):
-    num_Patient, num_Feature = np.shape(X)
+    """
+    Normalize the input data matrix X according to the selected normalization mode.
+    
+    norm_mode: str, either 'standard' (zero mean, unit variance) or 'normal' (min-max normalization)
+    """
+    num_Patient, num_Feature = X.shape
 
-    if norm_mode == 'standard': #zero mean unit variance
+    if norm_mode == 'standard':  # Zero mean unit variance
         for j in range(num_Feature):
-            if np.std(X[:,j]) != 0:
-                X[:,j] = (X[:,j] - np.mean(X[:, j]))/np.std(X[:,j])
+            if np.std(X[:, j]) != 0:
+                X[:, j] = (X[:, j] - np.mean(X[:, j])) / np.std(X[:, j])
             else:
-                X[:,j] = (X[:,j] - np.mean(X[:, j]))
-    elif norm_mode == 'normal': #min-max normalization
+                X[:, j] = X[:, j] - np.mean(X[:, j])
+    elif norm_mode == 'normal':  # Min-max normalization
         for j in range(num_Feature):
-            X[:,j] = (X[:,j] - np.min(X[:,j]))/(np.max(X[:,j]) - np.min(X[:,j]))
+            X[:, j] = (X[:, j] - np.min(X[:, j])) / (np.max(X[:, j]) - np.min(X[:, j]))
     else:
-        print("INPUT MODE ERROR!")
+        raise ValueError("Invalid normalization mode selected!")
 
     return X
 
-### MASK FUNCTIONS
-'''
-    fc_mask2      : To calculate LOSS_1 (log-likelihood loss)
-    fc_mask3      : To calculate LOSS_2 (ranking loss)
-'''
+### MASK FUNCTIONS ###
 def f_get_fc_mask2(time, label, num_Event, num_Category):
-    '''
-        mask4 is required to get the log-likelihood loss
-        mask4 size is [N, num_Event, num_Category]
-            if not censored : one element = 1 (0 elsewhere)
-            if censored     : fill elements with 1 after the censoring time (for all events)
-    '''
-    mask = np.zeros([np.shape(time)[0], num_Event, num_Category]) # for the first loss function
-    for i in range(np.shape(time)[0]):
-        if label[i,0] != 0:  #not censored
-            mask[i,int(label[i,0]-1),int(time[i,0])] = 1
-        else: #label[i,2]==0: censored
-            mask[i,:,int(time[i,0]+1):] =  1 #fill 1 until from the censoring time (to get 1 - \sum F)
+    """
+    Create the mask needed for log-likelihood loss (MASK2).
+
+    time: N x 1 array of event times
+    label: N x 1 array of event/censoring labels (0 = censoring, 1, 2, ... = events)
+    num_Event: number of competing events
+    num_Category: number of time intervals (categories)
+
+    Returns: N x num_Event x num_Category mask array
+    """
+    mask = np.zeros([time.shape[0], num_Event, num_Category])
+    for i in range(time.shape[0]):
+        if label[i, 0] != 0:  # If not censored
+            mask[i, int(label[i, 0] - 1), int(time[i, 0])] = 1
+        else:  # If censored
+            mask[i, :, int(time[i, 0] + 1):] = 1  # Fill 1 after censoring time
+
     return mask
 
 
 def f_get_fc_mask3(time, meas_time, num_Category):
     '''
-        mask5 is required calculate the ranking loss (for pair-wise comparision)
+        mask5 is required to calculate the ranking loss (for pair-wise comparison)
         mask5 size is [N, num_Category].
         - For longitudinal measurements:
              1's from the last measurement to the event time (exclusive and inclusive, respectively)
-             denom is not needed since comparing is done over the same denom
         - For single measurement:
-             1's from start to the event time(inclusive)
+             1's from start to the event time (inclusive)
     '''
-    mask = np.zeros([np.shape(time)[0], num_Category]) # for the first loss function
-    if np.shape(meas_time):  #lonogitudinal measurements
+    mask = np.zeros([np.shape(time)[0], num_Category])  # Initialize the mask
+
+    # If longitudinal measurements exist
+    if isinstance(meas_time, np.ndarray) and np.shape(meas_time)[0] > 0:  # Check if meas_time is an array
         for i in range(np.shape(time)[0]):
-            t1 = int(meas_time[i, 0]) # last measurement time
-            t2 = int(time[i, 0]) # censoring/event time
-            mask[i,(t1+1):(t2+1)] = 1  #this excludes the last measurement time and includes the event time
-    else:                    #single measurement
+            t1 = int(meas_time[i, 0])  # Last measurement time
+            t2 = int(time[i, 0])  # Censoring/event time
+            mask[i, (t1+1):(t2+1)] = 1  # Excludes the last measurement time and includes the event time
+
+    else:  # Single measurement case
         for i in range(np.shape(time)[0]):
-            t = int(time[i, 0]) # censoring/event time
-            mask[i,:(t+1)] = 1  #this excludes the last measurement time and includes the event time
+            t = int(time[i, 0])  # Censoring/event time
+            mask[i, :(t+1)] = 1  # Includes the event/censoring time
+    
     return mask
 
-
+### DATA IMPORT FUNCTIONS ###
 def import_dataset_SYNTHETIC(norm_mode='standard'):
+    """
+    Load and preprocess the synthetic dataset.
+    
+    norm_mode: str, either 'standard' (zero mean, unit variance) or 'normal' (min-max normalization)
+    
+    Returns: tuple (DIM, DATA, MASK)
+    """
     in_filename = './sample data/SYNTHETIC/synthetic_comprisk.csv'
     df = pd.read_csv(in_filename, sep=',')
-    
-    label           = np.asarray(df[['label']])
-    time            = np.asarray(df[['time']])
-    data            = np.asarray(df.iloc[:,4:])
-    data            = f_get_Normalization(data, norm_mode)
 
-    num_Category    = int(np.max(time) * 1.2)  #to have enough time-horizon
-    num_Event       = int(len(np.unique(label)) - 1) #only count the number of events (do not count censoring as an event)
+    label = np.asarray(df[['label']])
+    time = np.asarray(df[['time']])
+    data = np.asarray(df.iloc[:, 4:])
+    data = f_get_Normalization(data, norm_mode)
 
-    x_dim           = np.shape(data)[1]
+    num_Category = int(np.max(time) * 1.2)  # To have enough time-horizon
+    num_Event = int(len(np.unique(label)) - 1)  # Only count the number of events (do not count censoring)
 
-    mask1           = f_get_fc_mask2(time, label, num_Event, num_Category)
-    mask2           = f_get_fc_mask3(time, -1, num_Category)
+    x_dim = data.shape[1]
 
-    DIM             = (x_dim)
-    DATA            = (data, time, label)
-    MASK            = (mask1, mask2)
+    mask1 = f_get_fc_mask2(time, label, num_Event, num_Category)
+    mask2 = f_get_fc_mask3(time, -1, num_Category)
+
+    DIM = (x_dim)
+    DATA = (data, time, label)
+    MASK = (mask1, mask2)
 
     return DIM, DATA, MASK
 
 
 def import_dataset_METABRIC(norm_mode='standard'):
+    """
+    Load and preprocess the METABRIC dataset.
+
+    norm_mode: str, either 'standard' (zero mean, unit variance) or 'normal' (min-max normalization)
+
+    Returns: tuple (DIM, DATA, MASK)
+    """
     in_filename1 = './sample data/METABRIC/cleaned_features_final.csv'
     in_filename2 = './sample data/METABRIC/label.csv'
 
-    df1 = pd.read_csv(in_filename1, sep =',')
-    df2 = pd.read_csv(in_filename2, sep =',')
+    df1 = pd.read_csv(in_filename1, sep=',')
+    df2 = pd.read_csv(in_filename2, sep=',')
 
-    data  = np.asarray(df1)
-    data  = f_get_Normalization(data, norm_mode)
-    
-    time  = np.asarray(df2[['event_time']])
-    # time  = np.round(time/12.) #unit time = month
+    data = np.asarray(df1)
+    data = f_get_Normalization(data, norm_mode)
+
+    time = np.asarray(df2[['event_time']])
     label = np.asarray(df2[['label']])
 
-    
-    num_Category    = int(np.max(time) * 1.2)        #to have enough time-horizon
-    num_Event       = int(len(np.unique(label)) - 1) #only count the number of events (do not count censoring as an event)
+    num_Category = int(np.max(time) * 1.2)  # To have enough time-horizon
+    num_Event = int(len(np.unique(label)) - 1)  # Only count the number of events (do not count censoring)
 
-    x_dim           = np.shape(data)[1]
+    x_dim = data.shape[1]
 
-    mask1           = f_get_fc_mask2(time, label, num_Event, num_Category)
-    mask2           = f_get_fc_mask3(time, -1, num_Category)
+    mask1 = f_get_fc_mask2(time, label, num_Event, num_Category)
+    mask2 = f_get_fc_mask3(time, -1, num_Category)
 
-    DIM             = (x_dim)
-    DATA            = (data, time, label)
-    MASK            = (mask1, mask2)
+    DIM = (x_dim)
+    DATA = (data, time, label)
+    MASK = (mask1, mask2)
 
     return DIM, DATA, MASK
