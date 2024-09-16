@@ -18,7 +18,14 @@ import get_main
 import numpy as np
 
 import import_data as impt
+import random
+import numpy as np
+import tensorflow as tf
 
+def set_seeds(seed):
+    np.random.seed(seed)
+    random.seed(seed)
+    tf.random.set_seed(seed)
 
 # this saves the current hyperparameters
 def save_logging(dictionary, log_name):
@@ -118,7 +125,7 @@ if data_mode == 'SYNTHETIC':
     EVAL_TIMES = [12, 24, 36]
 elif data_mode == 'METABRIC':
     (x_dim), (data, time, label), (mask1, mask2) = impt.import_dataset_METABRIC(norm_mode = 'standard')
-	EVAL_TIMES = [144, 288, 432] 
+    EVAL_TIMES = [144, 288, 432] 
 else:
     print('ERROR:  DATA_MODE NOT FOUND !!!')
 
@@ -129,7 +136,7 @@ MASK = (mask1, mask2) #masks are required to calculate loss functions without fo
 out_path      = data_mode + '/results/'
 
 for itr in range(OUT_ITERATION):
-    
+    set_seeds(itr)
     if not os.path.exists(out_path + '/itr_' + str(itr) + '/'):
         os.makedirs(out_path + '/itr_' + str(itr) + '/')
 

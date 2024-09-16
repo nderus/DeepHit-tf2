@@ -8,7 +8,7 @@ import os
 # import sys
 
 from termcolor import colored
-from tensorflow.contrib.layers import fully_connected as FC_Net
+#from tensorflow.contrib.layers import fully_connected as FC_Net
 from sklearn.metrics import brier_score_loss
 from sklearn.model_selection import train_test_split
 
@@ -17,6 +17,7 @@ import utils_network as utils
 
 from class_DeepHit import Model_DeepHit
 from utils_eval import c_index, brier_score, weighted_c_index, weighted_brier_score
+from tensorflow.keras.initializers import GlorotNormal
 
 
 def load_logging(filename):
@@ -114,7 +115,9 @@ for out_itr in range(OUT_ITERATION):
         print('Error!')
 
 
-    initial_W                   = tf.contrib.layers.xavier_initializer()
+
+# Xavier normal initializer is GlorotNormal in TensorFlow 2.x
+    initial_W = GlorotNormal()
 
     alpha                       = in_parser['alpha']  #for log-likelihood loss
     beta                        = in_parser['beta']  #for ranking loss
@@ -138,28 +141,32 @@ for out_itr in range(OUT_ITERATION):
 
 
     # for out_itr in range(OUT_ITERATION):
-    print ('ITR: ' + str(out_itr+1) + ' DATA MODE: ' + data_mode + ' (a:' + str(alpha) + ' b:' + str(beta) + ' c:' + str(gamma) + ')' )
-    ##### CREATE DEEPFHT NETWORK
-    tf.reset_default_graph()
+    ##### GPU Memory Configuration (if needed)
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+    if gpus:
+        try:
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+        except RuntimeError as e:
+            print(e)
 
-    config = tf.ConfigProto()
-    config.gpu_options.allow_growth = True
-    sess = tf.Session(config=config)
-
-    model = Model_DeepHit(sess, "DeepHit", input_dims, network_settings)
-    saver = tf.train.Saver()
-
-    sess.run(tf.global_variables_initializer())
+    ##### CREATE DEEPHIT NETWORK
+    # Assuming Model_DeepHit is a subclass of tf.keras.Model
+    model = Model_DeepHit("DeepHit", input_dims, network_settings)
 
     ### TRAINING-TESTING SPLIT
-    (tr_data,te_data, tr_time,te_time, tr_label,te_label, 
-     tr_mask1,te_mask1, tr_mask2,te_mask2)  = train_test_split(data, time, label, mask1, mask2, test_size=0.20, random_state=seed) 
+    (tr_data, te_data, tr_time, te_time, tr_label, te_label, 
+    tr_mask1, te_mask1, tr_mask2, te_mask2) = train_test_split(
+        data, time, label, mask1, mask2, test_size=0.20, random_state=seed)
 
-    (tr_data,va_data, tr_time,va_time, tr_label,va_label, 
-     tr_mask1,va_mask1, tr_mask2,va_mask2)  = train_test_split(tr_data, tr_time, tr_label, tr_mask1, tr_mask2, test_size=0.20, random_state=seed) 
-    
+    (tr_data, va_data, tr_time, va_time, tr_label, va_label, 
+    tr_mask1, va_mask1, tr_mask2, va_mask2) = train_test_split(
+        tr_data, tr_time, tr_label, tr_mask1, tr_mask2, test_size=0.20, random_state=seed)
+
     ##### PREDICTION & EVALUATION
-    saver.restore(sess, in_path + '/itr_' + str(out_itr) + '/models/model_itr_' + str(out_itr))
+    # Assuming 'model' is a subclass of tf.keras.Model, we can restore weights like this:
+    model.load_weights(in_path + '/itr_' + str(out_itr) + '/models/model_itr_' + str(out_itr))
+
 
     ### PREDICTION
     pred = model.predict(te_data)
