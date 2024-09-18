@@ -123,24 +123,89 @@ class Model_DeepHit(tf.keras.Model):
 
         return out
 
-    def compute_loss(self, DATA, MASK, PARAMETERS, predictions):
-        (x_mb, k_mb, t_mb) = DATA
-        (m1_mb, m2_mb) = MASK
-        (alpha, beta, gamma) = PARAMETERS
+    # Log-likelihood loss function
+    def loss_Log_Likelihood(self, k, fc_mask1, predictions):
+        # I_1 is an indicator for uncensored events
+        I_1 = tf.sign(k)
 
-        I_1 = tf.sign(k_mb)
-
-        # Compute log-likelihood loss (Loss 1)
-        tmp1 = tf.reduce_sum(tf.reduce_sum(m1_mb * predictions, axis=2), axis=1, keepdims=True)
+        # Log P(T=t,K=k|x) for uncensored
+        tmp1 = tf.reduce_sum(tf.reduce_sum(fc_mask1 * predictions, axis=2), axis=1, keepdims=True)
         tmp1 = I_1 * tf.math.log(tmp1)
 
-        tmp2 = tf.reduce_sum(tf.reduce_sum(m1_mb * predictions, axis=2), axis=1, keepdims=True)
+        # Log \sum P(T>t|x) for censored
+        tmp2 = tf.reduce_sum(tf.reduce_sum(fc_mask1 * predictions, axis=2), axis=1, keepdims=True)
         tmp2 = (1.0 - I_1) * tf.math.log(tmp2)
 
-        LOSS_1 = -tf.reduce_mean(tmp1 + 1.0 * tmp2)
+        # Final loss
+        loss = -tf.reduce_mean(tmp1 + 1.0 * tmp2)
+        return loss
+    
+    def loss_Ranking(self, t, k, fc_mask2, predictions):
+        sigma1 = 0.1
+        eta = []
 
-        # Return the computed loss (you can include ranking and calibration loss as needed)
-        return alpha * LOSS_1  # Add the other losses like ranking and calibration here
+        for e in range(self.num_Event):
+            one_vector = tf.ones_like(t, dtype=tf.float32)
+            I_2 = tf.cast(tf.equal(k, e + 1), dtype=tf.float32)  # Indicator for the event
+            I_2 = tf.linalg.diag(tf.squeeze(I_2))
+
+            tmp_e = tf.reshape(predictions[:, e, :], [-1, self.num_Category])  # Event-specific joint probability
+
+            # Compute risk matrix
+            R = tf.matmul(tmp_e, tf.transpose(fc_mask2))  # Risk of each individual
+            diag_R = tf.reshape(tf.linalg.diag_part(R), [-1, 1])
+            R = tf.matmul(one_vector, tf.transpose(diag_R)) - R
+            R = tf.transpose(R)
+
+            # Time difference matrix T
+            T = tf.nn.relu(tf.sign(tf.matmul(one_vector, tf.transpose(t)) - tf.matmul(t, tf.transpose(one_vector))))
+            T = tf.matmul(I_2, T)  # Remain T_ij=1 only when the event occurred for subject i
+
+            # Compute ranking loss component for event e
+            tmp_eta = tf.reduce_mean(T * tf.exp(-R / sigma1), axis=1, keepdims=True)
+            eta.append(tmp_eta)
+
+        # Stack and compute final loss
+        eta = tf.stack(eta, axis=1)
+        eta = tf.reduce_mean(tf.reshape(eta, [-1, self.num_Event]), axis=1, keepdims=True)
+        loss = tf.reduce_sum(eta)
+
+        return loss
+    
+    def loss_Calibration(self, t, k, fc_mask2, predictions):
+        eta = []
+
+        for e in range(self.num_Event):
+            I_2 = tf.cast(tf.equal(k, e + 1), dtype=tf.float32)  # Indicator for event
+            tmp_e = tf.reshape(predictions[:, e, :], [-1, self.num_Category])  # Event-specific joint probability
+
+            # Compute r
+            r = tf.reduce_sum(tmp_e * fc_mask2, axis=0)
+            tmp_eta = tf.reduce_mean((r - I_2) ** 2, axis=1, keepdims=True)
+
+            eta.append(tmp_eta)
+
+        # Stack and compute final calibration loss
+        eta = tf.stack(eta, axis=1)
+        eta = tf.reduce_mean(tf.reshape(eta, [-1, self.num_Event]), axis=1, keepdims=True)
+        loss = tf.reduce_sum(eta)
+
+        return loss
+    
+    def compute_loss(self, k, t, fc_mask1, fc_mask2, predictions, alpha, beta, gamma):
+        # Log-likelihood loss
+        loss1 = self.loss_Log_Likelihood(k, fc_mask1, predictions)
+
+        # Ranking loss
+        loss2 = self.loss_Ranking(t, k, fc_mask2, predictions)
+
+        # Calibration loss
+        loss3 = self.loss_Calibration(t, k, fc_mask2, predictions)
+
+        # Total loss (with hyperparameters alpha, beta, and gamma)
+        total_loss = alpha * loss1 + beta * loss2 + gamma * loss3
+
+        return total_loss
     
     def train_step(self, DATA, MASK, PARAMETERS, keep_prob, lr_train):
         with tf.GradientTape() as tape:
