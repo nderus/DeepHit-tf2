@@ -208,17 +208,22 @@ class Model_DeepHit(tf.keras.Model):
         return total_loss
     
     def train_step(self, DATA, MASK, PARAMETERS, keep_prob, lr_train):
+        # Unpack DATA, MASK, and PARAMETERS
+        (x_mb, k_mb, t_mb) = DATA
+        (m1_mb, m2_mb) = MASK
+        (alpha, beta, gamma) = PARAMETERS
+
         with tf.GradientTape() as tape:
             # Forward pass through the model
-            predictions = self(DATA[0], training=True)
+            predictions = self(x_mb, training=True)  # Run model's forward pass
             
             # Compute loss based on model predictions
-            loss = self.compute_loss(DATA, MASK, PARAMETERS, predictions)
+            loss = self.compute_loss(k_mb, t_mb, m1_mb, m2_mb, predictions, alpha, beta, gamma)
 
         # Compute and apply gradients
         gradients = tape.gradient(loss, self.trainable_variables)
         
-        #optimizer = tf.keras.optimizers.Adam(learning_rate=lr_train)
+        # Use Adam optimizer with learning rate lr_train
         optimizer = optimizers.Adam(learning_rate=lr_train)
         optimizer.apply_gradients(zip(gradients, self.trainable_variables))
 
