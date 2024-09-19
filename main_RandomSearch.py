@@ -136,7 +136,7 @@ MASK = (mask1, mask2) #masks are required to calculate loss functions without fo
 out_path      = data_mode + '/results/'
 
 for itr in range(OUT_ITERATION):
-    set_seeds(itr)
+    #set_seeds(itr)
     if not os.path.exists(out_path + '/itr_' + str(itr) + '/'):
         os.makedirs(out_path + '/itr_' + str(itr) + '/')
 
@@ -146,6 +146,8 @@ for itr in range(OUT_ITERATION):
     for r_itr in range(RS_ITERATION):
         print('OUTER_ITERATION: ' + str(itr))
         print('Random search... itr: ' + str(r_itr))
+        set_seeds(itr * 100 + r_itr)  # Ensure reproducibility by setting seed at each random search iteration
+
         new_parser = get_random_hyperparameters(out_path)
         print(new_parser)
 
